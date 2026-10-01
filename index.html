@@ -41,6 +41,7 @@ input[type=text],input:not([type]),select{background:var(--bg);border:1px solid 
 .v b{font-weight:600;display:block}
 .v small,.mute{color:var(--mute)}
 .v input{width:18px;height:18px;accent-color:var(--acc);flex:none}
+.th{position:relative;flex:none;display:block}.th i{position:absolute;right:4px;bottom:4px;background:#000c;color:#fff;font:600 12px Figtree,sans-serif;padding:1px 5px;border-radius:4px}.sel small{flex:none}
 .tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
 .sel{max-height:300px;overflow:auto;margin:10px 0;border-top:1px solid var(--line)}
 .sel div{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
@@ -95,23 +96,35 @@ a{color:var(--acc)}
     <div class="tabs" id="tabs" hidden>
       <button class="tab on" data-tab="videos">Videos</button>
       <button class="tab" data-tab="lists">Listas</button>
+      <button class="tab" data-tab="rel">Lanzamientos</button>
     </div>
-    <div class="tools" id="tools" hidden>
-      <button class="btn" id="allBtn">Marcar los cargados</button>
-      <button class="btn" id="noneBtn">Desmarcar los cargados</button>
+    <div id="tools" hidden>
+      <div class="tools">
+        <input id="fq" class="grow" placeholder="Buscar entre los cargados">
+        <select id="fs"><option value="">Orden original</option><option value="new">Más nuevos</option><option value="old">Más antiguos</option><option value="pop">Más vistos</option><option value="like">Más likes</option><option value="short">Más cortos</option><option value="long">Más largos</option><option value="az">Título A a Z</option></select>
+        <select id="fd"><option value="">Cualquier duración</option><option value="ns">Más de 1 min</option><option value="s">Hasta 5 min</option><option value="m">De 5 a 20 min</option><option value="l">Más de 20 min</option></select>
+        <label class="row" style="font-size:13px"><input type="checkbox" id="fh"> Ocultar ya elegidos</label>
+      </div>
+      <div class="tools">
+        <button class="btn" id="allBtn">Marcar los que se ven</button>
+        <button class="btn" id="noneBtn">Desmarcar los que se ven</button>
+        <span id="info" class="mute"></span>
+      </div>
     </div>
     <div id="list"><div class="empty">Cargá un canal para ver sus videos y listas. Lo que tildes se va sumando a tu selección, de cualquier canal.</div></div>
-    <div class="row" style="justify-content:center;margin-top:10px"><button class="btn" id="more" hidden>Cargar más</button></div>
+    <div class="row" style="justify-content:center;margin-top:10px"><button class="btn" id="more" hidden>Cargar más</button><button class="btn" id="moreAll" hidden>Cargar todos</button></div>
   </section>
 </div>
 
 <aside>
   <b>Tu selección: <span id="count">0</span> videos</b>
+  <div class="mute" id="total"></div>
   <div class="sel" id="sel"></div>
   <div class="row"><input id="name" class="grow" placeholder="Nombre de la lista">
   <select id="priv"><option value="private">Privada</option><option value="unlisted">No listada</option><option value="public">Pública</option></select></div>
   <div class="row" style="margin-top:10px">
     <button class="btn p grow" id="make">Crear lista en YouTube</button>
+    <button class="btn" id="dedupe" title="Quita videos con el mismo título">Quitar repetidos</button>
     <button class="btn" id="clear">Vaciar</button>
   </div>
   <div id="out"></div>
@@ -210,70 +223,133 @@ $('#chips').onclick=e=>{const b=e.target.closest('[data-ch]');if(b)run(()=>openC
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>run(()=>setTab(b.dataset.tab)));
 async function setTab(t){
   tab=t;document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
-  if(t==='videos')await showItems(cur.uploads);else await showLists();
+  if(t==='videos')await showItems(cur.uploads);else if(t==='lists')await showLists();else await showReleases();
 }
 
 /* ---------- Videos ---------- */
 let pl=null;
-async function showItems(playlistId,more){
+const dur=s=>{const m=/P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(s)||[];return(+m[1]||0)*86400+(+m[2]||0)*3600+(+m[3]||0)*60+(+m[4]||0)};
+const p2=n=>String(n).padStart(2,'0');
+const fmt=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return(h?h+':'+p2(m):m)+':'+p2(s%60)};
+const fmtL=s=>{const h=Math.floor(s/3600),m=Math.round(s%3600/60);return h?`${h} h ${m} min`:`${m} min`};
+const nf=new Intl.NumberFormat('es',{notation:'compact'});
+const pick=v=>({t:v.t,th:v.th,ch:v.ch,d:v.d});
+const redraw=()=>{if(mode==='videos'&&items.length)drawVideos()};
+
+async function enrich(list){  // duración, fecha, vistas y likes
+  for(let i=0;i<list.length;i+=50){
+    const part=list.slice(i,i+50);
+    const r=await api('videos',{part:'contentDetails,statistics,snippet',id:part.map(v=>v.id).join(',')});
+    r.items.forEach(x=>{const v=part.find(y=>y.id===x.id);
+      v.d=dur(x.contentDetails.duration);v.pub=Date.parse(x.snippet.publishedAt);
+      v.v=+x.statistics.viewCount||0;v.l=+x.statistics.likeCount||0});
+  }
+  list.forEach(v=>{if(v.d==null){v.d=0;v.pub=0;v.v=0;v.l=0}});
+}
+async function showItems(playlistId,more,quiet){
   mode='videos';pl=playlistId;
   if(!more){items=[];next=null;$('#list').innerHTML='<div class="empty">Cargando…</div>'}
   const r=await api('playlistItems',{part:'snippet',playlistId,maxResults:50,...(next?{pageToken:next}:{})});
   next=r.nextPageToken||null;
-  items.push(...r.items.map(toVideo).filter(Boolean));
-  drawVideos();
+  const vs=r.items.map(toVideo).filter(Boolean);
+  await enrich(vs);items.push(...vs);
+  if(!quiet)drawVideos();
 }
 function toVideo(i){
   const s=i.snippet;if(!s.resourceId||s.title==='Private video'||s.title==='Deleted video')return null;
   const th=s.thumbnails&&(s.thumbnails.medium||s.thumbnails.default);
-  return{id:s.resourceId.videoId,t:s.title,th:th?th.url:'',ch:s.videoOwnerChannelTitle||''};
+  return{id:s.resourceId.videoId,t:s.title,th:th?th.url:'',ch:s.videoOwnerChannelTitle||'',d:null};
+}
+const durOk=(d,f)=>!f||(f==='ns'?d>60:f==='s'?d<=300:f==='m'?d>300&&d<=1200:d>1200);
+const SORT={new:(a,b)=>b.pub-a.pub,old:(a,b)=>a.pub-b.pub,pop:(a,b)=>b.v-a.v,like:(a,b)=>b.l-a.l,short:(a,b)=>a.d-b.d,long:(a,b)=>b.d-a.d,az:(a,b)=>a.t.localeCompare(b.t,'es')};
+function view(){
+  const q=$('#fq').value.toLowerCase(),f=$('#fd').value,h=$('#fh').checked;
+  const a=items.filter(v=>(!q||(v.t+' '+v.ch).toLowerCase().includes(q))&&(!h||!sel.has(v.id))&&durOk(v.d,f));
+  const o=SORT[$('#fs').value];if(o)a.sort(o);return a;
 }
 function drawVideos(){
-  $('#tools').hidden=!items.length;$('#more').hidden=!next;
-  $('#list').innerHTML=items.length?items.map(v=>`<label class="v"><input type="checkbox" data-id="${v.id}" ${sel.has(v.id)?'checked':''}><img loading="lazy" src="${esc(v.th)}" alt=""><span><b>${esc(v.t)}</b><small>${esc(v.ch)}</small></span></label>`).join(''):'<div class="empty">No hay videos para mostrar.</div>';
+  const a=view();
+  $('#tools').hidden=!items.length;$('#more').hidden=!next;$('#moreAll').hidden=!next;
+  $('#info').textContent=`Mostrando ${a.length} de ${items.length} cargados`;
+  $('#list').innerHTML=a.length?a.map(v=>`<label class="v"><input type="checkbox" data-id="${v.id}" ${sel.has(v.id)?'checked':''}><span class="th"><img loading="lazy" src="${esc(v.th)}" alt=""><i>${fmt(v.d)}</i></span><span><b>${esc(v.t)}</b><small>${cur?'':esc(v.ch)+', '}${nf.format(v.v)} vistas, ${new Date(v.pub).toLocaleDateString('es',{year:'numeric',month:'short',day:'numeric'})}</small></span></label>`).join(''):'<div class="empty">No hay videos con esos filtros.</div>';
 }
+['#fq','#fs','#fd','#fh'].forEach(k=>$(k).addEventListener('input',drawVideos));
 $('#list').addEventListener('change',e=>{
   const id=e.target.dataset&&e.target.dataset.id;if(!id)return;
   const v=items.find(x=>x.id===id);
-  e.target.checked?sel.set(id,{t:v.t,th:v.th,ch:v.ch}):sel.delete(id);drawSel();
+  e.target.checked?sel.set(id,pick(v)):sel.delete(id);drawSel();
 });
-$('#allBtn').onclick=()=>{items.forEach(v=>sel.set(v.id,{t:v.t,th:v.th,ch:v.ch}));drawVideos();drawSel()};
-$('#noneBtn').onclick=()=>{items.forEach(v=>sel.delete(v.id));drawVideos();drawSel()};
+$('#allBtn').onclick=()=>{let n=0,dup=0;view().forEach(v=>{sel.has(v.id)?dup++:(sel.set(v.id,pick(v)),n++)});drawVideos();drawSel();say(`Se sumaron ${n} videos nuevos${dup?` (${dup} ya estaban elegidos)`:''}.`)};
+$('#noneBtn').onclick=()=>{view().forEach(v=>sel.delete(v.id));drawVideos();drawSel()};
 $('#more').onclick=()=>run(async()=>{mode==='lists'?await showLists(true):await showItems(pl,true)});
+$('#moreAll').onclick=()=>run(async()=>{
+  $('#moreAll').disabled=true;
+  try{while(next){say(`Cargando… ${items.length} videos`);await showItems(pl,true,true)}say('')}
+  finally{$('#moreAll').disabled=false;drawVideos()}
+});
 
-/* ---------- Listas del canal ---------- */
+/* ---------- Listas y lanzamientos ---------- */
 let lists=[];
+const listRow=l=>{const th=l.snippet.thumbnails&&(l.snippet.thumbnails.medium||l.snippet.thumbnails.default);
+  return`<div class="v"><span class="th"><img loading="lazy" src="${esc(th?th.url:'')}" alt=""></span><span class="grow"><b>${esc(l.snippet.title)}</b><small>${l.contentDetails.itemCount} videos</small></span><button class="btn" data-open="${l.id}">Abrir</button><button class="btn" data-all="${l.id}">Marcar toda</button></div>`};
 async function showLists(more){
-  mode='lists';$('#tools').hidden=true;
+  mode='lists';$('#tools').hidden=true;$('#moreAll').hidden=true;
   if(!more){lists=[];next=null;$('#list').innerHTML='<div class="empty">Cargando…</div>'}
   const r=await api('playlists',{part:'snippet,contentDetails',channelId:cur.id,maxResults:50,...(next?{pageToken:next}:{})});
   next=r.nextPageToken||null;lists.push(...r.items);
   $('#more').hidden=!next;
-  $('#list').innerHTML=lists.length?lists.map(l=>{const th=l.snippet.thumbnails&&(l.snippet.thumbnails.medium||l.snippet.thumbnails.default);
-    return`<div class="v"><img loading="lazy" src="${esc(th?th.url:'')}" alt=""><span class="grow"><b>${esc(l.snippet.title)}</b><small>${l.contentDetails.itemCount} videos</small></span><button class="btn" data-open="${l.id}">Abrir</button><button class="btn" data-all="${l.id}">Marcar toda</button></div>`}).join(''):'<div class="empty">Este canal no tiene listas públicas.</div>';
+  $('#list').innerHTML=lists.length?lists.map(listRow).join(''):'<div class="empty">Este canal no tiene listas públicas.</div>';
+}
+async function showReleases(){
+  mode='rel';$('#tools').hidden=true;$('#more').hidden=true;$('#moreAll').hidden=true;
+  $('#list').innerHTML='<div class="empty">Buscando álbumes y canciones…</div>';
+  const pls=[];let tok=null;
+  do{const r=await api('playlists',{part:'snippet,contentDetails',channelId:cur.id,maxResults:50,...(tok?{pageToken:tok}:{})});pls.push(...r.items);tok=r.nextPageToken}while(tok&&pls.length<300);
+  if(!cur.topics){
+    cur.topics=[];
+    if(!/ - Topic$/.test(cur.title)){
+      const r=await api('search',{part:'snippet',type:'channel',q:cur.title+' - Topic',maxResults:5});
+      cur.topics=r.items.filter(i=>/ - Topic$/.test(i.snippet.title)&&i.snippet.title.toLowerCase().startsWith(cur.title.toLowerCase())).slice(0,3).map(i=>({id:i.snippet.channelId,title:i.snippet.title}));
+    }
+  }
+  const albums=pls.filter(l=>l.id.startsWith('OLAK5uy'));
+  const h=albums.map(listRow).join('')+cur.topics.map(t=>`<div class="v"><span class="grow"><b>${esc(t.title)}</b><small>Canal de canciones oficiales: todos los temas del artista</small></span><button class="btn" data-topic="${t.id}">Abrir canciones</button></div>`).join('');
+  $('#list').innerHTML=h||'<div class="empty">No encontré álbumes ni canal de canciones para este canal. Si ves un álbum en YouTube Music, pegá su link (con list=OLAK5…) en "Agregar fuente".</div>';
 }
 $('#list').addEventListener('click',e=>{
-  const o=e.target.closest('[data-open]'),a=e.target.closest('[data-all]');
-  if(o)run(async()=>{$('#tabs').hidden=true;await showItems(o.dataset.open)});
+  const o=e.target.closest('[data-open]'),a=e.target.closest('[data-all]'),t=e.target.closest('[data-topic]');
+  if(t)run(()=>openChannel({id:t.dataset.topic}));
+  if(o)run(async()=>{document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));await showItems(o.dataset.open)});
   if(a)run(async()=>{
-    a.disabled=true;let tok=null,n=0;
-    do{
-      const r=await api('playlistItems',{part:'snippet',playlistId:a.dataset.all,maxResults:50,...(tok?{pageToken:tok}:{})});
-      r.items.map(toVideo).filter(Boolean).forEach(v=>{sel.set(v.id,{t:v.t,th:v.th,ch:v.ch});n++});
-      tok=r.nextPageToken;a.textContent='Marcados: '+n;
-    }while(tok);
-    drawSel();
+    a.disabled=true;let tok=null,n=0,dup=0;
+    try{
+      do{
+        const r=await api('playlistItems',{part:'snippet',playlistId:a.dataset.all,maxResults:50,...(tok?{pageToken:tok}:{})});
+        const vs=r.items.map(toVideo).filter(Boolean);await enrich(vs);
+        vs.forEach(v=>{sel.has(v.id)?dup++:(sel.set(v.id,pick(v)),n++)});
+        tok=r.nextPageToken;a.textContent='Marcados: '+(n+dup);
+      }while(tok);
+    }finally{a.disabled=false;a.textContent='Marcar toda';drawSel()}
+    say(`Se sumaron ${n} videos nuevos${dup?` (${dup} ya estaban elegidos)`:''}.`);
   });
 });
 
 /* ---------- Selección ---------- */
 function drawSel(){
   $('#count').textContent=sel.size;
-  $('#sel').innerHTML=[...sel].map(([id,v])=>`<div><span title="${esc(v.t)}">${esc(v.t)}</span><button class="x" data-rm="${id}" aria-label="Quitar">×</button></div>`).join('')||'<div class="mute">Todavía no marcaste nada.</div>';
+  $('#total').textContent=sel.size?'Duración total: '+fmtL([...sel.values()].reduce((s,v)=>s+(v.d||0),0)):'';
+  $('#sel').innerHTML=[...sel].map(([id,v])=>`<div><span title="${esc(v.t)}">${esc(v.t)}</span><small class="mute">${v.d?fmt(v.d):''}</small><button class="x" data-rm="${id}" aria-label="Quitar">×</button></div>`).join('')||'<div class="mute">Todavía no marcaste nada.</div>';
   store.set('sel',JSON.stringify([...sel]));
 }
-$('#sel').onclick=e=>{const b=e.target.closest('[data-rm]');if(!b)return;sel.delete(b.dataset.rm);drawSel();if(mode==='videos'&&items.length)drawVideos()};
-$('#clear').onclick=()=>{if(sel.size&&!confirm('¿Vaciar la selección?'))return;sel.clear();drawSel();if(mode==='videos'&&items.length)drawVideos()};
+$('#sel').onclick=e=>{const b=e.target.closest('[data-rm]');if(!b)return;sel.delete(b.dataset.rm);drawSel();redraw()};
+$('#clear').onclick=()=>{if(sel.size&&!confirm('¿Vaciar la selección?'))return;sel.clear();drawSel();redraw()};
+$('#dedupe').onclick=()=>{
+  const seen=new Set(),del=[];
+  for(const[id,v]of sel){const k=v.t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');seen.has(k)?del.push(id):seen.add(k)}
+  if(!del.length){say('No encontré videos con el mismo título.');return}
+  if(!confirm(`Hay ${del.length} videos con título repetido. ¿Quitarlos y dejar el primero de cada uno?`))return;
+  del.forEach(id=>sel.delete(id));drawSel();redraw();say(`Quité ${del.length} repetidos.`);
+};
 
 /* ---------- Crear lista ---------- */
 $('#make').onclick=()=>run(async()=>{

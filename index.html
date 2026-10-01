@@ -203,7 +203,7 @@ async function openChannel(p){
   const r=await api('channels',{part:'snippet,contentDetails',...p});
   if(!r.items||!r.items.length)throw new Error('No encontré ese canal.');
   const c=r.items[0];
-  cur={id:c.id,title:c.snippet.title,uploads:c.contentDetails.relatedPlaylists.uploads};
+  cur={id:c.id,title:c.snippet.title,handle:c.snippet.customUrl||'',uploads:c.contentDetails.relatedPlaylists.uploads};
   sources.set(cur.id,cur);renderChips();say('');
   $('#chHead').innerHTML=`<h2 style="margin:12px 0 0;font-size:18px">${esc(cur.title)}</h2>`;
   $('#tabs').hidden=false;setTab('videos');
@@ -291,7 +291,7 @@ $('#moreAll').onclick=()=>run(async()=>{
 /* ---------- Listas y lanzamientos ---------- */
 let lists=[];
 const listRow=l=>{const th=l.snippet.thumbnails&&(l.snippet.thumbnails.medium||l.snippet.thumbnails.default);
-  return`<div class="v"><span class="th"><img loading="lazy" src="${esc(th?th.url:'')}" alt=""></span><span class="grow"><b>${esc(l.snippet.title)}</b><small>${l.contentDetails.itemCount} videos</small></span><button class="btn" data-open="${l.id}">Abrir</button><button class="btn" data-all="${l.id}">Marcar toda</button></div>`};
+  return`<div class="v"><span class="th"><img loading="lazy" src="${esc(th?th.url:'')}" alt=""></span><span class="grow"><b>${esc(l.snippet.title)}</b><small>${l.contentDetails?l.contentDetails.itemCount+' videos':esc(l.snippet.channelTitle||'')}</small></span><button class="btn" data-open="${l.id}">Abrir</button><button class="btn" data-all="${l.id}">Marcar toda</button></div>`};
 async function showLists(more){
   mode='lists';$('#tools').hidden=true;$('#moreAll').hidden=true;
   if(!more){lists=[];next=null;$('#list').innerHTML='<div class="empty">Cargando…</div>'}
@@ -300,37 +300,77 @@ async function showLists(more){
   $('#more').hidden=!next;
   $('#list').innerHTML=lists.length?lists.map(listRow).join(''):'<div class="empty">Este canal no tiene listas públicas.</div>';
 }
+const topicRow=t=>`<div class="v"><span class="grow"><b>${esc(t.title)}</b><small>Canal de canciones oficiales: todos los temas del artista</small></span><button class="btn" data-topic="${t.id}">Abrir canciones</button></div>`;
+const splitNames=v=>[...new Set(v.split(/[,\n]/).map(x=>x.trim()).filter(Boolean))].slice(0,5);
+function autoNames(){
+  const out=[];
+  out.push(...splitNames(store.get('alias:'+cur.id)||''));
+  out.push(cur.title.replace(/\s*[-–]?\s*(official|公式|オフィシャル)(\s*(youtube\s*)?(channel|チャンネル))?\s*$/i,'').trim(),cur.title);
+  if(cur.handle){const h=cur.handle.replace(/^@/,'').replace(/^official[_-]?|[_-]?official$/i,'').replace(/[_-]+/g,' ').trim();if(h)out.push(h)}
+  return[...new Set(out.filter(Boolean))].slice(0,5);
+}
 async function showReleases(){
   mode='rel';$('#tools').hidden=true;$('#more').hidden=true;$('#moreAll').hidden=true;
-  $('#list').innerHTML='<div class="empty">Buscando álbumes y canciones…</div>';
-  const pls=[];let tok=null;
-  do{const r=await api('playlists',{part:'snippet,contentDetails',channelId:cur.id,maxResults:50,...(tok?{pageToken:tok}:{})});pls.push(...r.items);tok=r.nextPageToken}while(tok&&pls.length<300);
-  if(!cur.topics){
-    cur.topics=[];
-    if(!/ - Topic$/.test(cur.title)){
-      const r=await api('search',{part:'snippet',type:'channel',q:cur.title+' - Topic',maxResults:5});
-      cur.topics=r.items.filter(i=>/ - Topic$/.test(i.snippet.title)&&i.snippet.title.toLowerCase().startsWith(cur.title.toLowerCase())).slice(0,3).map(i=>({id:i.snippet.channelId,title:i.snippet.title}));
-    }
-  }
-  const albums=pls.filter(l=>l.id.startsWith('OLAK5uy'));
-  const h=albums.map(listRow).join('')+cur.topics.map(t=>`<div class="v"><span class="grow"><b>${esc(t.title)}</b><small>Canal de canciones oficiales: todos los temas del artista</small></span><button class="btn" data-topic="${t.id}">Abrir canciones</button></div>`).join('');
-  $('#list').innerHTML=h||'<div class="empty">No encontré álbumes ni canal de canciones para este canal. Si ves un álbum en YouTube Music, pegá su link (con list=OLAK5…) en "Agregar fuente".</div>';
+  $('#list').innerHTML=`<div class="row"><input id="rn" class="grow" value="${esc(autoNames().join(', '))}" aria-label="Nombres del artista"><button class="btn p" id="rgo">Buscar</button></div><p class="mute" style="font-size:13px;margin:6px 0 12px">Nombres del artista, separados por coma: en japonés, romanizado, como figure en los álbumes. Se buscan todos, en este canal y en su canal "Topic". Cada nombre gasta unos 200 de cuota.</p><div id="rres"></div>`;
+  await doRel(autoNames(),false);
+}
+let relAlbums=[];
+async function addPlaylist(id,prog){
+  let tok=null,n=0,dup=0;
+  do{
+    const r=await api('playlistItems',{part:'snippet',playlistId:id,maxResults:50,...(tok?{pageToken:tok}:{})});
+    const vs=r.items.map(toVideo).filter(Boolean);await enrich(vs);
+    vs.forEach(v=>{sel.has(v.id)?dup++:(sel.set(v.id,pick(v)),n++)});
+    tok=r.nextPageToken;if(prog)prog(n+dup);
+  }while(tok);
+  return{n,dup};
+}
+async function doRel(names,force){
+  const box=$('#rres');if(!box)return;
+  const key=names.join('|');
+  if(!force&&cur.relKey===key){box.innerHTML=cur.relHtml;relAlbums=cur.relAlbums;return}
+  box.innerHTML='<div class="empty">Buscando álbumes y canciones…</div>';
+  const norm=t=>String(t||'').toLowerCase().replace(/\s*-\s*topic$/,'').replace(/[^\p{L}\p{N}]+/gu,'');
+  const ns=names.map(norm).filter(Boolean);
+  const match=t=>{const n=norm(t);return!!n&&ns.some(x=>n===x||n.startsWith(x))};
+  const albums=new Map(),topics=new Map(),errs=[];
+  const add=l=>{if(l.id&&l.id.startsWith('OLAK5uy')&&!albums.has(l.id))albums.set(l.id,l)};
+  const soft=async f=>{try{await f()}catch(e){errs.push(e.message)}};
+  const own=async cid=>{let tok=null,k=0;do{const r=await api('playlists',{part:'snippet,contentDetails',channelId:cid,maxResults:50,...(tok?{pageToken:tok}:{})});r.items.forEach(add);tok=r.nextPageToken}while(tok&&++k<4)};
+  await soft(()=>own(cur.id));                                   // 1) listas del propio canal
+  for(const n of names)await soft(async()=>{                      // 2) canal Topic, con cada nombre
+    const r=await api('search',{part:'snippet',type:'channel',q:n+' - Topic',maxResults:5});
+    r.items.filter(i=>/ - Topic$/.test(i.snippet.title)&&match(i.snippet.title)).forEach(i=>topics.set(i.snippet.channelId,{id:i.snippet.channelId,title:i.snippet.title}));
+  });
+  for(const t of[...topics.values()].slice(0,3))await soft(()=>own(t.id));   // 3) álbumes del canal Topic
+  for(const n of names)await soft(async()=>{                      // 4) búsqueda directa de listas de álbum
+    const r=await api('search',{part:'snippet',type:'playlist',q:n,maxResults:50});
+    r.items.forEach(i=>{if(i.id.playlistId&&match(i.snippet.channelTitle))add({id:i.id.playlistId,snippet:i.snippet})});
+  });
+  relAlbums=[...albums.values()].sort((a,b)=>(b.snippet.publishedAt||'').localeCompare(a.snippet.publishedAt||''));
+  const tl=[...topics.values()];
+  const html=(relAlbums.length?`<div class="tools"><button class="btn p" id="relAll">Marcar los ${relAlbums.length} lanzamientos</button><span class="mute">Se suman todas sus canciones</span></div>`:'')
+    +relAlbums.map(listRow).join('')+tl.map(topicRow).join('')
+    +(errs.length?`<div class="msg err">${esc(errs[0])}</div>`:'')
+    +(!relAlbums.length&&!tl.length?'<div class="empty">No encontré nada con esos nombres. Probá otra escritura, o pegá el link de un álbum (con list=OLAK5…) en "Agregar fuente".</div>':'');
+  if($('#rres')===box){box.innerHTML=html;cur.relKey=key;cur.relHtml=html;cur.relAlbums=relAlbums}
 }
 $('#list').addEventListener('click',e=>{
-  const o=e.target.closest('[data-open]'),a=e.target.closest('[data-all]'),t=e.target.closest('[data-topic]');
+  const o=e.target.closest('[data-open]'),a=e.target.closest('[data-all]'),t=e.target.closest('[data-topic]'),g=e.target.closest('#rgo'),r=e.target.closest('#relAll');
+  if(g)run(()=>{const v=$('#rn').value;store.set('alias:'+cur.id,v);return doRel(splitNames(v),true)});
   if(t)run(()=>openChannel({id:t.dataset.topic}));
   if(o)run(async()=>{document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));await showItems(o.dataset.open)});
   if(a)run(async()=>{
-    a.disabled=true;let tok=null,n=0,dup=0;
-    try{
-      do{
-        const r=await api('playlistItems',{part:'snippet',playlistId:a.dataset.all,maxResults:50,...(tok?{pageToken:tok}:{})});
-        const vs=r.items.map(toVideo).filter(Boolean);await enrich(vs);
-        vs.forEach(v=>{sel.has(v.id)?dup++:(sel.set(v.id,pick(v)),n++)});
-        tok=r.nextPageToken;a.textContent='Marcados: '+(n+dup);
-      }while(tok);
-    }finally{a.disabled=false;a.textContent='Marcar toda';drawSel()}
-    say(`Se sumaron ${n} videos nuevos${dup?` (${dup} ya estaban elegidos)`:''}.`);
+    a.disabled=true;let res={n:0,dup:0};
+    try{res=await addPlaylist(a.dataset.all,k=>a.textContent='Marcados: '+k)}
+    finally{a.disabled=false;a.textContent='Marcar toda';drawSel()}
+    say(`Se sumaron ${res.n} videos nuevos${res.dup?` (${res.dup} ya estaban elegidos)`:''}.`);
+  });
+  if(r)run(async()=>{
+    r.disabled=true;let n=0,dup=0,i=0;
+    try{for(const l of relAlbums){i++;r.textContent=`Marcando ${i} de ${relAlbums.length}…`;const x=await addPlaylist(l.id);n+=x.n;dup+=x.dup}}
+    finally{r.disabled=false;r.textContent=`Marcar los ${relAlbums.length} lanzamientos`;drawSel()}
+    say(`Se sumaron ${n} canciones nuevas${dup?` (${dup} ya estaban elegidas)`:''}. Si una canción está en un sencillo y en un álbum, usá "Quitar repetidos".`);
   });
 });
 

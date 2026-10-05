@@ -155,7 +155,7 @@ function initAuth(){
   if(!id||!window.google||!google.accounts)return false;
   tc=google.accounts.oauth2.initTokenClient({
     client_id:id,
-    scope:'https://www.googleapis.com/auth/youtube',
+    scope:'https://www.googleapis.com/auth/youtube.force-ssl',
     callback:r=>{
       if(r.error){say('No se pudo conectar: '+esc(r.error),true);return}
       token=r.access_token;$('#loginBtn').textContent='Reconectar';$('#who').textContent='Conectado';say('');

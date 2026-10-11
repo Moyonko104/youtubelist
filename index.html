@@ -42,6 +42,11 @@ input[type=text],input:not([type]),select{background:var(--bg);border:1px solid 
 .v small,.mute{color:var(--mute)}
 .v input{width:18px;height:18px;accent-color:var(--acc);flex:none}
 .th{position:relative;flex:none;display:block}.th i{position:absolute;right:4px;bottom:4px;background:#000c;color:#fff;font:600 12px Figtree,sans-serif;padding:1px 5px;border-radius:4px}.sel small{flex:none}
+.v.pos{box-shadow:inset 3px 0 0 #d9a400;background:color-mix(in srgb,#d9a400 12%,transparent)}
+.sel div.dx{background:color-mix(in srgb,var(--acc) 18%,transparent)}
+.sel div.dp{background:color-mix(in srgb,#d9a400 22%,transparent)}
+.tagx{color:var(--acc);font-weight:600}.tagp{color:#b88900;font-weight:600}
+#dest{width:100%;margin-bottom:8px}
 .tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
 .sel{max-height:300px;overflow:auto;margin:10px 0;border-top:1px solid var(--line)}
 .sel div{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
@@ -84,11 +89,31 @@ a{color:var(--acc)}
     </details>
   </section>
 
+  <section style="margin-top:0;margin-bottom:16px">
+    <b>Buscar en YouTube</b>
+    <div class="row" style="margin-top:8px">
+      <input id="sq" class="grow" placeholder="Ej: Anna song">
+      <button class="btn p" id="sgo">Buscar</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <select id="sf" aria-label="Qué buscar">
+        <option value="all">Todo (cuentas, videos y listas)</option>
+        <option value="ch">Cuentas y artistas</option>
+        <option value="song">Canciones</option>
+        <option value="mv">Videoclips (MV)</option>
+        <option value="live">En vivo</option>
+        <option value="rel">Lanzamientos (álbumes y sencillos)</option>
+      </select>
+      <select id="so" aria-label="Oficiales"><option value="">Oficiales y no oficiales</option><option value="only">Solo oficiales</option><option value="no">Sin oficiales</option></select>
+      <span class="mute" id="sinfo"></span>
+    </div>
+  </section>
   <section style="margin-top:0">
     <b>Agregar fuente</b>
     <div class="row" style="margin-top:8px">
       <input id="q" class="grow" placeholder="Link de canal, @usuario, nombre o link de una lista">
       <button class="btn p" id="go">Cargar</button>
+      <button class="btn" id="mine">Mis listas</button>
     </div>
     <div class="chips" id="chips"></div>
     <div id="msg"></div>
@@ -108,6 +133,7 @@ a{color:var(--acc)}
       <div class="tools">
         <button class="btn" id="allBtn">Marcar los que se ven</button>
         <button class="btn" id="noneBtn">Desmarcar los que se ven</button>
+        <button class="btn" id="loadAll">Cargar toda la lista</button>
         <span id="info" class="mute"></span>
       </div>
     </div>
@@ -119,7 +145,9 @@ a{color:var(--acc)}
 <aside>
   <b>Tu selección: <span id="count">0</span> videos</b>
   <div class="mute" id="total"></div>
+  <div id="dupinfo" style="font-size:12px"></div>
   <div class="sel" id="sel"></div>
+  <select id="dest"><option value="">Crear lista nueva</option></select>
   <div class="row"><input id="name" class="grow" placeholder="Nombre de la lista">
   <select id="priv"><option value="private">Privada</option><option value="unlisted">No listada</option><option value="public">Pública</option></select></div>
   <div class="row" style="margin-top:10px">
@@ -146,6 +174,9 @@ try{JSON.parse(store.get('sel')||'[]').forEach(([k,v])=>sel.set(k,v))}catch(e){}
 $('#cid').value=store.get('cid')||'';
 if(!$('#cid').value)$('#cfg').hidden=false;
 
+const dec=s=>{const t=document.createElement('textarea');t.innerHTML=s;return t.value};   // &#39; -> '
+const isVid=v=>!v.kind||v.kind==='video';
+const nt=t=>String(t).toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');   // título normalizado
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const say=(h,err)=>{$('#msg').innerHTML=h?`<div class="msg ${err?'err':''}">${h}</div>`:''};
 
@@ -155,7 +186,7 @@ function initAuth(){
   if(!id||!window.google||!google.accounts)return false;
   tc=google.accounts.oauth2.initTokenClient({
     client_id:id,
-    scope:'https://www.googleapis.com/auth/youtube.force-ssl',
+    scope:'https://www.googleapis.com/auth/youtube',
     callback:r=>{
       if(r.error){say('No se pudo conectar: '+esc(r.error),true);return}
       token=r.access_token;$('#loginBtn').textContent='Reconectar';$('#who').textContent='Conectado';say('');
@@ -234,7 +265,7 @@ const fmt=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return(h?h+':'+
 const fmtL=s=>{const h=Math.floor(s/3600),m=Math.round(s%3600/60);return h?`${h} h ${m} min`:`${m} min`};
 const nf=new Intl.NumberFormat('es',{notation:'compact'});
 const pick=v=>({t:v.t,th:v.th,ch:v.ch,d:v.d});
-const redraw=()=>{if(mode==='videos'&&items.length)drawVideos()};
+const redraw=()=>{if((mode==='videos'||mode==='search')&&items.length)drawVideos()};
 
 async function enrich(list){  // duración, fecha, vistas y likes
   for(let i=0;i<list.length;i+=50){
@@ -264,14 +295,18 @@ const durOk=(d,f)=>!f||(f==='ns'?d>60:f==='s'?d<=300:f==='m'?d>300&&d<=1200:d>12
 const SORT={new:(a,b)=>b.pub-a.pub,old:(a,b)=>a.pub-b.pub,pop:(a,b)=>b.v-a.v,like:(a,b)=>b.l-a.l,short:(a,b)=>a.d-b.d,long:(a,b)=>b.d-a.d,az:(a,b)=>a.t.localeCompare(b.t,'es')};
 function view(){
   const q=$('#fq').value.toLowerCase(),f=$('#fd').value,h=$('#fh').checked;
-  const a=items.filter(v=>(!q||(v.t+' '+v.ch).toLowerCase().includes(q))&&(!h||!sel.has(v.id))&&durOk(v.d,f));
+  const a=items.filter(v=>(!q||(v.t+' '+v.ch).toLowerCase().includes(q))&&(!h||!sel.has(v.id))&&(!isVid(v)||durOk(v.d,f)));
   const o=SORT[$('#fs').value];if(o)a.sort(o);return a;
 }
+const vidRow=(v,tt)=>`<label class="v ${!sel.has(v.id)&&tt.has(nt(v.t))?'pos':''}" ${!sel.has(v.id)&&tt.has(nt(v.t))?'title="Título parecido a uno ya elegido"':''}><input type="checkbox" data-id="${v.id}" ${sel.has(v.id)?'checked':''}><span class="th"><img loading="lazy" src="${esc(v.th)}" alt=""><i>${fmt(v.d)}</i></span><span><b>${esc(v.t)}</b><small>${cur?'':esc(v.ch)+', '}${nf.format(v.v)} vistas, ${new Date(v.pub).toLocaleDateString('es',{year:'numeric',month:'short',day:'numeric'})}${v.of?', oficial':''}</small></span></label>`;
+const chRow=v=>`<div class="v"><span class="th"><img loading="lazy" src="${esc(v.th)}" alt=""></span><span class="grow"><b>${esc(v.t)}</b><small>Cuenta${v.of?', oficial (estimado)':''}${v.desc?': '+esc(v.desc.slice(0,90)):''}</small></span><button class="btn" data-chopen="${v.id}">Abrir canal</button></div>`;
+const plRow=v=>`<div class="v"><span class="th"><img loading="lazy" src="${esc(v.th)}" alt=""></span><span class="grow"><b>${esc(v.t)}</b><small>Lista de ${esc(v.ch)}${v.of?', oficial':''}</small></span><button class="btn" data-open="${v.id}">Abrir</button><button class="btn" data-all="${v.id}">Marcar toda</button></div>`;
+const rowHtml=(v,tt)=>v.kind==='channel'?chRow(v):v.kind==='playlist'?plRow(v):vidRow(v,tt);
 function drawVideos(){
-  const a=view();
-  $('#tools').hidden=!items.length;$('#more').hidden=!next;$('#moreAll').hidden=!next;
+  const a=view(),tt=new Set([...sel.values()].map(x=>nt(x.t)));
+  $('#tools').hidden=!items.length;$('#more').hidden=!next;$('#moreAll').hidden=!next||mode==='search';$('#loadAll').hidden=(mode==='search');
   $('#info').textContent=`Mostrando ${a.length} de ${items.length} cargados`;
-  $('#list').innerHTML=a.length?a.map(v=>`<label class="v"><input type="checkbox" data-id="${v.id}" ${sel.has(v.id)?'checked':''}><span class="th"><img loading="lazy" src="${esc(v.th)}" alt=""><i>${fmt(v.d)}</i></span><span><b>${esc(v.t)}</b><small>${cur?'':esc(v.ch)+', '}${nf.format(v.v)} vistas, ${new Date(v.pub).toLocaleDateString('es',{year:'numeric',month:'short',day:'numeric'})}</small></span></label>`).join(''):'<div class="empty">No hay videos con esos filtros.</div>';
+  $('#list').innerHTML=a.length?a.map(v=>rowHtml(v,tt)).join(''):'<div class="empty">No hay videos con esos filtros.</div>';
 }
 ['#fq','#fs','#fd','#fh'].forEach(k=>$(k).addEventListener('input',drawVideos));
 $('#list').addEventListener('change',e=>{
@@ -279,9 +314,9 @@ $('#list').addEventListener('change',e=>{
   const v=items.find(x=>x.id===id);
   e.target.checked?sel.set(id,pick(v)):sel.delete(id);drawSel();
 });
-$('#allBtn').onclick=()=>{let n=0,dup=0;view().forEach(v=>{sel.has(v.id)?dup++:(sel.set(v.id,pick(v)),n++)});drawVideos();drawSel();say(`Se sumaron ${n} videos nuevos${dup?` (${dup} ya estaban elegidos)`:''}.`)};
-$('#noneBtn').onclick=()=>{view().forEach(v=>sel.delete(v.id));drawVideos();drawSel()};
-$('#more').onclick=()=>run(async()=>{mode==='lists'?await showLists(true):await showItems(pl,true)});
+$('#allBtn').onclick=()=>{let n=0,dup=0;view().filter(isVid).forEach(v=>{sel.has(v.id)?dup++:(sel.set(v.id,pick(v)),n++)});drawVideos();drawSel();say(`Se sumaron ${n} videos nuevos${dup?` (${dup} ya estaban elegidos)`:''}.`)};
+$('#noneBtn').onclick=()=>{view().filter(isVid).forEach(v=>sel.delete(v.id));drawVideos();drawSel()};
+$('#more').onclick=()=>run(async()=>{mode==='search'?await doSearch(true):mode==='lists'?await showLists(true):await showItems(pl,true)});
 $('#moreAll').onclick=()=>run(async()=>{
   $('#moreAll').disabled=true;
   try{while(next){say(`Cargando… ${items.length} videos`);await showItems(pl,true,true)}say('')}
@@ -315,15 +350,17 @@ async function showReleases(){
   await doRel(autoNames(),false);
 }
 let relAlbums=[];
+const loadedPl=new Set();
 async function addPlaylist(id,prog){
+  if(loadedPl.has(id))return{n:0,dup:0,skipped:true};
   let tok=null,n=0,dup=0;
   do{
     const r=await api('playlistItems',{part:'snippet',playlistId:id,maxResults:50,...(tok?{pageToken:tok}:{})});
     const vs=r.items.map(toVideo).filter(Boolean);await enrich(vs);
-    vs.forEach(v=>{sel.has(v.id)?dup++:(sel.set(v.id,pick(v)),n++)});
+    vs.forEach(v=>{if(sel.has(v.id)){dup++;const x=sel.get(v.id);x.rep=(x.rep||1)+1}else{sel.set(v.id,pick(v));n++}});
     tok=r.nextPageToken;if(prog)prog(n+dup);
   }while(tok);
-  return{n,dup};
+  loadedPl.add(id);return{n,dup};
 }
 async function doRel(names,force){
   const box=$('#rres');if(!box)return;
@@ -374,20 +411,111 @@ $('#list').addEventListener('click',e=>{
   });
 });
 
+/* ---------- Buscador ---------- */
+const scache=new Map();
+const OFI=/\b(official|oficial|vevo)\b|公式|オフィシャル/i;
+const oficial=r=>/ - Topic$/.test(r.ch||'')||OFI.test((r.kind==='channel'?r.t:r.ch)+' '+(r.kind==='video'?r.t:''));
+const hoy=()=>'sq:'+new Date().toISOString().slice(0,10);
+function sinfo(){const n=+(store.get(hoy())||0);$('#sinfo').textContent=n?`Búsquedas hoy: ${n} (unas ${n*100} de 10.000 unidades)`:''}
+const QS={all:q=>({q}),ch:q=>({q,type:'channel'}),song:q=>({q,type:'video',videoCategoryId:'10'}),
+  mv:q=>({q:q+' official video',type:'video'}),live:q=>({q:q+' live',type:'video'}),rel:q=>({q,type:'playlist'})};
+function sparse(i){
+  const k=(i.id.kind||'').split('#')[1],s=i.snippet,t=s.thumbnails&&(s.thumbnails.medium||s.thumbnails.default);
+  const b={th:t?t.url:'',t:dec(s.title),ch:dec(s.channelTitle||''),d:0,pub:0,v:0,l:0};
+  if(k==='video'&&i.id.videoId)return{...b,kind:'video',id:i.id.videoId,d:null};
+  if(k==='channel')return{...b,kind:'channel',id:i.id.channelId,ch:'',desc:dec(s.description||'')};
+  if(k==='playlist')return{...b,kind:'playlist',id:i.id.playlistId};
+  return null;
+}
+async function doSearch(more){
+  const q=$('#sq').value.trim();if(!q)return;
+  const f=$('#sf').value,o=$('#so').value,key=[q,f,o].join('|');
+  mode='search';cur=null;pl=null;renderChips();say('');
+  $('#tabs').hidden=true;$('#chHead').innerHTML=`<h2 style="margin:12px 0 0;font-size:18px">Resultados: ${esc(q)}</h2>`;
+  if(!more&&scache.has(key)){const c=scache.get(key);items=c.items.slice();next=c.next;drawVideos();return}
+  if(!more){items=[];next=null;$('#list').innerHTML='<div class="empty">Buscando…</div>'}
+  $('#sgo').disabled=true;
+  try{
+    const r=await api('search',{part:'snippet',maxResults:50,...QS[f](q),...(more&&next?{pageToken:next}:{})});
+    store.set(hoy(),(+(store.get(hoy())||0))+1);sinfo();
+    let rs=r.items.map(sparse).filter(Boolean);
+    if(f==='rel')rs=rs.filter(x=>x.kind==='playlist'&&x.id.startsWith('OLAK5uy'));
+    rs.forEach(x=>{x.of=oficial(x)});
+    if(o==='only')rs=rs.filter(x=>x.of);if(o==='no')rs=rs.filter(x=>!x.of);
+    await enrich(rs.filter(x=>x.kind==='video'));
+    const rank={channel:0,video:1,playlist:2};rs.sort((a,b)=>rank[a.kind]-rank[b.kind]);
+    items.push(...rs);next=r.nextPageToken||null;
+    scache.set(key,{items:items.slice(),next});
+    drawVideos();
+    if(!items.length)$('#list').innerHTML='<div class="empty">No hay resultados con esos filtros. Probá con otra búsqueda, o con "Todo".</div>';
+    else if(f==='rel'&&!rs.length)say('No encontré álbumes en esta tanda. Probá con "Artista - Álbum", o con "Cargar más".');
+  }finally{$('#sgo').disabled=false}
+}
+$('#sgo').onclick=()=>run(()=>doSearch(false));
+$('#sq').addEventListener('keydown',e=>{if(e.key==='Enter')$('#sgo').click()});
+$('#list').addEventListener('click',e=>{const c=e.target.closest('[data-chopen]');if(c)run(()=>openChannel({id:c.dataset.chopen}))});
+sinfo();
+
+/* ---------- Mis listas y fusión ---------- */
+let myLists=[];
+const mineRow=l=>{const th=l.snippet.thumbnails&&(l.snippet.thumbnails.medium||l.snippet.thumbnails.default);
+  return`<label class="v"><input type="checkbox" data-pl="${l.id}"><span class="th"><img loading="lazy" src="${esc(th?th.url:'')}" alt=""></span><span class="grow"><b>${esc(l.snippet.title)}</b><small>${l.contentDetails.itemCount} videos</small></span><button class="btn" data-open="${l.id}">Abrir</button></label>`};
+function fillDest(){
+  const d=$('#dest'),v=d.value;
+  d.innerHTML='<option value="">Crear lista nueva</option>'+myLists.map(l=>`<option value="${l.id}">Agregar a: ${esc(l.snippet.title)}</option>`).join('');
+  d.value=[...d.options].some(o=>o.value===v)?v:'';d.onchange();
+}
+$('#dest').onchange=()=>{const d=$('#dest').value;$('#name').disabled=!!d;$('#priv').disabled=!!d;$('#make').textContent=d?'Agregar a esa lista':'Crear lista en YouTube'};
+async function showMine(){
+  mode='mine';cur=null;renderChips();say('');
+  $('#tabs').hidden=true;$('#tools').hidden=true;$('#more').hidden=true;$('#moreAll').hidden=true;
+  $('#chHead').innerHTML='<h2 style="margin:12px 0 0;font-size:18px">Mis listas</h2>';
+  $('#list').innerHTML='<div class="empty">Cargando…</div>';
+  myLists=[];let tok=null;
+  do{const r=await api('playlists',{part:'snippet,contentDetails',mine:'true',maxResults:50,...(tok?{pageToken:tok}:{})});myLists.push(...r.items);tok=r.nextPageToken}while(tok);
+  fillDest();
+  $('#list').innerHTML=myLists.length?'<div class="tools"><button class="btn p" id="mineLoad">Cargar las marcadas a la selección</button><span class="mute">Marcá una o varias para fusionarlas</span></div>'+myLists.map(mineRow).join(''):'<div class="empty">No encontré listas en tu cuenta.</div>';
+}
+$('#mine').onclick=()=>run(showMine);
+$('#list').addEventListener('click',e=>{
+  const b=e.target.closest('#mineLoad');if(!b)return;
+  const ids=[...document.querySelectorAll('[data-pl]:checked')].map(x=>x.dataset.pl);
+  if(!ids.length){say('Marcá al menos una lista.',true);return}
+  run(async()=>{
+    b.disabled=true;let n=0,dup=0;
+    try{for(const[i,id]of ids.entries()){b.textContent=`Cargando ${i+1} de ${ids.length}…`;const r=await addPlaylist(id);n+=r.n;dup+=r.dup}}
+    finally{b.disabled=false;b.textContent='Cargar las marcadas a la selección';drawSel()}
+    say(`Se sumaron ${n} videos${dup?`; ${dup} aparecían más de una vez y quedaron marcados en rojo en tu selección`:''}.`);
+  });
+});
+$('#loadAll').onclick=()=>run(async()=>{
+  if(!pl)return;const b=$('#loadAll');b.disabled=true;let r={n:0,dup:0};
+  try{r=await addPlaylist(pl,k=>b.textContent=`Cargados ${k}…`)}
+  finally{b.disabled=false;b.textContent='Cargar toda la lista';drawSel();redraw()}
+  say(r.skipped?'Esa lista ya estaba cargada en tu selección.':`Se sumaron ${r.n} videos${r.dup?`; ${r.dup} repetidos marcados en rojo`:''}.`);
+});
+
 /* ---------- Selección ---------- */
 function drawSel(){
   $('#count').textContent=sel.size;
   $('#total').textContent=sel.size?'Duración total: '+fmtL([...sel.values()].reduce((s,v)=>s+(v.d||0),0)):'';
-  $('#sel').innerHTML=[...sel].map(([id,v])=>`<div><span title="${esc(v.t)}">${esc(v.t)}</span><small class="mute">${v.d?fmt(v.d):''}</small><button class="x" data-rm="${id}" aria-label="Quitar">×</button></div>`).join('')||'<div class="mute">Todavía no marcaste nada.</div>';
+  const g=new Map();for(const v of sel.values()){const k=nt(v.t);g.set(k,(g.get(k)||0)+1)}
+  let ex=0,po=0;
+  const rows=[...sel].map(([id,v])=>{
+    const e=v.rep>1,p=!e&&g.get(nt(v.t))>1;if(e)ex++;if(p)po++;
+    return`<div class="${e?'dx':p?'dp':''}"><span title="${esc(v.t)}">${esc(v.t)}</span>${e?`<small class="mute">${v.rep} veces</small>`:''}<small class="mute">${v.d?fmt(v.d):''}</small><button class="x" data-rm="${id}" aria-label="Quitar">×</button></div>`});
+  $('#sel').innerHTML=rows.join('')||'<div class="mute">Todavía no marcaste nada.</div>';
+  $('#dupinfo').innerHTML=(ex||po)?`<span class="tagx">${ex} repetidos exactos (rojo)</span> <span class="tagp">${po} con título parecido (amarillo)</span>`:'';
   store.set('sel',JSON.stringify([...sel]));
 }
 $('#sel').onclick=e=>{const b=e.target.closest('[data-rm]');if(!b)return;sel.delete(b.dataset.rm);drawSel();redraw()};
-$('#clear').onclick=()=>{if(sel.size&&!confirm('¿Vaciar la selección?'))return;sel.clear();drawSel();redraw()};
+$('#clear').onclick=()=>{if(sel.size&&!confirm('¿Vaciar la selección?'))return;sel.clear();loadedPl.clear();drawSel();redraw()};
 $('#dedupe').onclick=()=>{
+  const hadEx=[...sel.values()].some(v=>v.rep>1);sel.forEach(v=>{v.rep=1});
   const seen=new Set(),del=[];
-  for(const[id,v]of sel){const k=v.t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'');seen.has(k)?del.push(id):seen.add(k)}
-  if(!del.length){say('No encontré videos con el mismo título.');return}
-  if(!confirm(`Hay ${del.length} videos con título repetido. ¿Quitarlos y dejar el primero de cada uno?`))return;
+  for(const[id,v]of sel){const k=nt(v.t);seen.has(k)?del.push(id):seen.add(k)}
+  if(!del.length){drawSel();say(hadEx?'Los repetidos exactos ya estaban unidos en un solo video; quité las marcas.':'No encontré videos con el mismo título.');return}
+  if(!confirm(`Hay ${del.length} videos con título repetido. ¿Quitarlos y dejar el primero de cada uno?`)){drawSel();return}
   del.forEach(id=>sel.delete(id));drawSel();redraw();say(`Quité ${del.length} repetidos.`);
 };
 
@@ -395,11 +523,17 @@ $('#dedupe').onclick=()=>{
 $('#make').onclick=()=>run(async()=>{
   const out=$('#out');
   if(!sel.size)throw new Error('Marcá al menos un video.');
-  const title=$('#name').value.trim();if(!title)throw new Error('Ponele un nombre a la lista.');
+  const dest=$('#dest').value;
+  const title=$('#name').value.trim();if(!dest&&!title)throw new Error('Ponele un nombre a la lista.');
   $('#make').disabled=true;
   try{
-    const p=await api('playlists',{part:'snippet,status'},'POST',{snippet:{title,description:'Creada con Mezclador de listas'},status:{privacyStatus:$('#priv').value}});
-    const ids=[...sel.keys()];let ok=0;
+    let p,ids=[...sel.keys()],skip=0;
+    if(dest){   // lista existente: se saltean los videos que ya tiene
+      p={id:dest};const have=new Set();let tok=null;
+      do{const r=await api('playlistItems',{part:'contentDetails',playlistId:dest,maxResults:50,...(tok?{pageToken:tok}:{})});r.items.forEach(i=>have.add(i.contentDetails.videoId));tok=r.nextPageToken}while(tok);
+      skip=ids.filter(id=>have.has(id)).length;ids.filter(id=>have.has(id)).forEach(id=>sel.delete(id));ids=ids.filter(id=>!have.has(id));
+    }else p=await api('playlists',{part:'snippet,status'},'POST',{snippet:{title,description:'Creada con Mezclador de listas'},status:{privacyStatus:$('#priv').value}});
+    let ok=0;
     for(const id of ids){
       out.innerHTML=`<div class="msg">Agregando ${ok+1} de ${ids.length}…</div>`;
       try{
@@ -416,7 +550,7 @@ $('#make').onclick=()=>run(async()=>{
       }
     }
     drawSel();if(mode==='videos'&&items.length)drawVideos();
-    out.innerHTML=`<div class="msg" style="color:var(--ok)">Lista creada con ${ok} videos. <a href="https://www.youtube.com/playlist?list=${p.id}" target="_blank" rel="noopener">Abrirla en YouTube</a></div>`;
+    out.innerHTML=`<div class="msg" style="color:var(--ok)">${dest?`Se agregaron ${ok} videos${skip?` (${skip} ya estaban en la lista)`:''}.`:`Lista creada con ${ok} videos.`} <a href="https://www.youtube.com/playlist?list=${p.id}" target="_blank" rel="noopener">Abrirla en YouTube</a></div>`;
   }finally{$('#make').disabled=false}
 });
 
